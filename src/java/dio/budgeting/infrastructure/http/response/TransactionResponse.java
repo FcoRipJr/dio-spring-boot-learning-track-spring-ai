@@ -1,0 +1,12 @@
+package dio.budgeting.infrastructure.http.response;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+
+import dio.budgeting.application.output.TransactionOutput;
+
+public record TransactionResponse(String id, String category, String description, BigDecimal amount, LocalDate date) {
+    public static TransactionResponse from(TransactionOutput output) {
+        return new TransactionResponse(output.id(), output.category(), output.description(), output.value(), output.date());
+    }
+}
