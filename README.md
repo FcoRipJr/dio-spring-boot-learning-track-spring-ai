@@ -8,7 +8,7 @@ Desafio de Projeto final da trilha de Spring Boot do bootcamp de Java com Inteli
 >
 > Este repositório é baseado no projeto [`05-spring-ai`](https://github.com/digitalinnovationone/dio-spring-boot-learning-track/tree/main/05-spring-ai) do repositório [digitalinnovationone/dio-spring-boot-learning-track](https://github.com/digitalinnovationone/dio-spring-boot-learning-track), construído nas aulas com o expert Poiani.
 >
-> O código da aplicação (domínio, casos de uso, controller, prompts e testes) é o do projeto original. As diferenças estão descritas em [Alterações em relação ao projeto original](#alterações-em-relação-ao-projeto-original).
+> A base do código é a do projeto original. Os ajustes de ambiente estão em [Alterações em relação ao projeto original](#alterações-em-relação-ao-projeto-original), e as funcionalidades novas, em [Qual melhoria você implementou](#qual-melhoria-você-implementou).
 
 ## Alterações em relação ao projeto original
 
@@ -58,13 +58,22 @@ A IA é integrada **sem atravessar as fronteiras do domínio e dos casos de uso*
 - `src/main/java/dio/budgeting/domain`: modelo de domínio e contrato do repositório.
 - `src/main/java/dio/budgeting/application`: casos de uso, usados tanto pela API REST quanto pelo *tool calling*.
 - `src/main/java/dio/budgeting/infrastructure`: adaptadores HTTP e JPA, e a integração entre as camadas.
+- `infrastructure/ai`: ferramentas auxiliares usadas só pela IA (ex.: data atual).
 - `src/main/resources/prompts/system-message.st`: prompt de sistema do assistente.
 - `src/main/resources/application.properties`: configuração dos modelos de IA.
 
 ### Tópicos do módulo
 
 - **Speech-to-text**: `TranscriptionModel` transcreve o áudio. As configurações do modelo ficam no `application.properties`.
-- **Tool calling**: o `ChatClient` registra os casos de uso como ferramentas. Os métodos anotados com `@Tool` (`persist-transaction` e `list-transactions-by-category`) expõem as capacidades de negócio ao modelo.
+- **Tool calling**: o `ChatClient` registra as ferramentas que o modelo pode chamar:
+
+  | Tool | Classe | O que faz |
+  |---|---|---|
+  | `persist-transaction` | `PersistTransactionUseCase` | registra um gasto (data opcional) |
+  | `list-transactions-by-category` | `ListTransactionsByCategoryUseCase` | lista os gastos de uma categoria |
+  | `list-transactions-by-date` | `ListTransactionsByDateUseCase` | lista os gastos de uma data |
+  | `get-current-date` | `CurrentDateTool` | informa a data de hoje, para interpretar "hoje" e "ontem" |
+
 - **Text-to-speech**: `TextToSpeechModel` gera o MP3 a partir do texto final, e o endpoint de IA devolve esse áudio.
 
 ## Como executar
@@ -72,8 +81,8 @@ A IA é integrada **sem atravessar as fronteiras do domínio e dos casos de uso*
 ### Pré-requisitos
 
 - JDK 21
-- Docker (no Windows, o Docker Desktop precisa estar aberto)
-- Uma chave da API da OpenAI
+- Docker (no Windows, o Docker Desktop precisa estar rodando; pelo terminal: `docker desktop start`)
+- Uma chave da API da OpenAI, com créditos, para o endpoint de IA. Os endpoints REST funcionam sem créditos.
 
 ### 1. Configurar a chave da OpenAI
 
@@ -110,9 +119,60 @@ O suporte a Docker Compose do Spring Boot sobe o MySQL automaticamente, usando o
 
 | Método | Rota | Corpo | Resposta |
 |---|---|---|---|
-| `POST` | `/transactions` | JSON | transação criada |
+| `POST` | `/transactions` | JSON: `description`, `category`, `amount` (**centavos**) e `date` (opcional, `YYYY-MM-DD`) | transação criada |
 | `GET` | `/transactions/{categoria}` | — | transações da categoria (`GROCERIES`, `PHARMA` ou `AUTO`) |
+| `GET` | `/transactions?date=YYYY-MM-DD` | — | transações da data |
 | `POST` | `/transactions/ai` | `multipart/form-data` com o campo `file` (áudio) | áudio MP3 com a resposta |
+
+**Unidades do valor:** na requisição, `amount` vai em **centavos** (`8000` = R$ 80,00). Na resposta, `amount` vem em **reais** (`80.00`).
+
+Exemplo de resposta:
+
+```json
+{"id":"4099d89d-2e00-41bb-84af-3ea421f76246","category":"GROCERIES","description":"Mercado","amount":80.00,"date":"2026-11-14"}
+```
+
+### Testando as novas funcionalidades
+
+Com a aplicação no ar (os exemplos usam 14/11/2026 como "hoje"):
+
+```bash
+# Linux / macOS / Git Bash
+curl -X POST http://localhost:8080/transactions -H "Content-Type: application/json" \
+  -d '{"description":"Farmacia","category":"PHARMA","amount":4000,"date":"2026-11-10"}'
+curl -X POST http://localhost:8080/transactions -H "Content-Type: application/json" \
+  -d '{"description":"Mercado","category":"GROCERIES","amount":8000}'
+curl "http://localhost:8080/transactions?date=2026-11-10"
+curl "http://localhost:8080/transactions?date=10/11/2026"   # formato inválido
+```
+
+```powershell
+# Windows PowerShell (.Content mostra o JSON exatamente como a API devolve)
+(Invoke-WebRequest -UseBasicParsing -Method Post -Uri http://localhost:8080/transactions -ContentType 'application/json' -Body '{"description":"Farmacia","category":"PHARMA","amount":4000,"date":"2026-11-10"}').Content
+(Invoke-WebRequest -UseBasicParsing -Method Post -Uri http://localhost:8080/transactions -ContentType 'application/json' -Body '{"description":"Mercado","category":"GROCERIES","amount":8000}').Content
+(Invoke-WebRequest -UseBasicParsing "http://localhost:8080/transactions?date=2026-11-10").Content
+```
+
+| Cenário | Resultado esperado |
+|---|---|
+| `POST` com `"date":"2026-11-10"` e `"amount":4000` | `201`, `"amount":40.00`, `"date":"2026-11-10"` |
+| `POST` sem `date` e com `"amount":8000` | `201`, `"amount":80.00`, `date` = data atual do servidor |
+| `GET /transactions?date=2026-11-10` | `200`, só a transação daquele dia |
+| `GET /transactions?date=` com uma data sem gastos | `200`, `[]` |
+| `GET /transactions/GROCERIES` | `200`, com `date` e `amount` em reais |
+| `GET /transactions?date=10/11/2026` (formato errado) | `400` |
+| `GET /transactions` (sem `date`) | `400` |
+| `POST` com `"date":"2026-13-45"` (data inválida) | `400` |
+
+#### Pela IA (requer créditos na OpenAI)
+
+Grave um áudio (por exemplo, com o Gravador de Som do Windows) e envie para `/transactions/ai`:
+
+| Frase | Comportamento esperado |
+|---|---|
+| "Gastei 80 reais no mercado" | registra com a data de hoje; a resposta fala **80 reais** |
+| "Ontem gastei 35 reais na farmácia" | consulta `get-current-date` e registra com a data de ontem |
+| "Quanto gastei hoje?" | consulta `get-current-date` e depois `list-transactions-by-date` |
 
 ### Fluxo com áudio
 
@@ -130,64 +190,175 @@ curl -X POST http://localhost:8080/transactions/ai \
 curl.exe -X POST "http://localhost:8080/transactions/ai" -F "file=@src/test/resources/audio/recording-1.m4a" -o resposta.mp3
 ```
 
-Abra o `resposta.mp3` para ouvir a resposta. Depois, confira a transação registrada:
-
-```bash
-curl http://localhost:8080/transactions/GROCERIES
-```
-
-### Endpoints JSON
-
-```bash
-# Linux / macOS / Git Bash
-curl -X POST http://localhost:8080/transactions \
-  -H "Content-Type: application/json" \
-  -d '{"description":"Compra no mercado","category":"GROCERIES","amount":8000}'
-```
-
-```powershell
-# Windows PowerShell
-Invoke-RestMethod -Method Post -Uri http://localhost:8080/transactions -ContentType 'application/json' -Body '{"description":"Compra no mercado","category":"GROCERIES","amount":8000}'
-Invoke-RestMethod http://localhost:8080/transactions/GROCERIES
-```
+Abra o `resposta.mp3` para ouvir a resposta.
 
 ### Testes automatizados
 
+Os testes com `@SpringBootTest` sobem a aplicação inteira e precisam de um MySQL acessível. Para isso, suba o banco do `compose.yml` e informe a conexão por variáveis de ambiente:
+
 ```bash
-./gradlew test        # Linux / macOS
-.\gradlew.bat test    # Windows
+# Linux / macOS / Git Bash
+docker compose up -d --wait
+export SPRING_DATASOURCE_URL=jdbc:mysql://localhost:3307/transaction
+export SPRING_DATASOURCE_USERNAME=app
+export SPRING_DATASOURCE_PASSWORD=app
+./gradlew test
 ```
 
-- Os testes `*IT` (`OpenAiChatModelIT`, `OpenAiChatClientIT`, `ToolCallingIT`, `OpenAiTranscriptionModelIT` e `OpenAiSpeechModelIT`) chamam a API real da OpenAI. Eles só rodam com a `OPENAI_API_KEY` definida e, sem ela, são ignorados. Cada execução consome créditos da conta.
-- O `BudgetingApplicationTests` falha nesta versão. Veja as limitações abaixo.
+```powershell
+# Windows PowerShell (carregue também o .env, como no passo 1 de "Como executar")
+docker compose up -d --wait
+$env:SPRING_DATASOURCE_URL = "jdbc:mysql://localhost:3307/transaction"
+$env:SPRING_DATASOURCE_USERNAME = "app"
+$env:SPRING_DATASOURCE_PASSWORD = "app"
+.\gradlew.bat test
+```
 
-### Limitações conhecidas (herdadas do projeto original)
+| Teste | O que verifica | Precisa de |
+|---|---|---|
+| `BudgetingApplicationTests` | a aplicação sobe | MySQL + `OPENAI_API_KEY` (qualquer valor) |
+| `TransactionOutputTest` | conversão centavos → reais | nada (teste unitário) |
+| `TransactionControllerDateTest` | data informada, data padrão e listagem por data, pela API | MySQL + `OPENAI_API_KEY` (qualquer valor) |
+| `*IT` (`OpenAiChatModelIT`, `OpenAiChatClientIT`, `ToolCallingIT`, `OpenAiTranscriptionModelIT`, `OpenAiSpeechModelIT`) | integração real com a OpenAI | MySQL + chave **com créditos**. Sem a chave, são ignorados; sem créditos, falham com `429 insufficient_quota` |
 
-- **`BudgetingApplicationTests.contextLoads` falha**: o banco só é configurado pelo Docker Compose, que é `developmentOnly` e não vale para os testes. Por isso o contexto não encontra um `DataSource`.
-- **Valor em centavos não é convertido na resposta**: a ferramenta recebe o valor em centavos ("80 reais" vira `8000`), mas o `TransactionOutput` não divide por 100, então a resposta mostra `8000.0`.
+Para rodar só os testes criados nesta versão:
+
+```bash
+./gradlew test --tests '*TransactionOutputTest' --tests '*TransactionControllerDateTest'        # Linux / macOS
+```
+
+```powershell
+.\gradlew.bat test --tests '*TransactionOutputTest' --tests '*TransactionControllerDateTest'    # Windows
+```
+
+No VS Code, também dá para usar o ▶ ao lado de cada classe de teste.
+
+#### Testes criados
+
+**`TransactionOutputTest`** (`src/test/java/dio/budgeting/application/output`): teste unitário parametrizado da conversão de centavos para reais, sem Spring, banco ou IA.
+
+| Centavos | Esperado |
+|---|---|
+| `8000` | `80.00` |
+| `1` | `0.01` |
+| `12345` | `123.45` |
+| `0` | `0.00` |
+
+A comparação é feita com `isEqualTo(new BigDecimal(...))`, que também confere as duas casas decimais. Ou seja, `80.00` passa, mas `80` ou `80.0` falhariam.
+
+**`TransactionControllerDateTest`** (`src/test/java/dio/budgeting/infrastructure/http`): testes de integração que chamam a API com MockMvc e passam por todas as camadas, do controller até o banco.
+
+| Cenário | Verificação |
+|---|---|
+| Criar transação **com** data (`2000-01-15`) | `201` e a mesma data na resposta |
+| Criar transação **sem** data | `201` e `date` igual à data atual |
+| Criar com data e listar com `?date=` | a lista contém o `id` criado, e todos os itens têm a data pesquisada |
+
+- **`@Transactional` na classe:** cada teste é desfeito (*rollback*) no final, então nada fica gravado no banco. Funciona porque o MockMvc executa a requisição na mesma thread do teste.
+- **Data de teste distante (`2000-01-15`):** não se mistura com dados reais.
+- **MockMvc montado com `MockMvcBuilders.webAppContextSetup(...)`:** no Spring Boot 4, o `@AutoConfigureMockMvc` fica no módulo `spring-boot-webmvc-test`, que o projeto não usa.
+
+#### Resultados
+
+Execução no VS Code (Test Runner for Java), com todos os testes passando:
+
+![TransactionOutputTest: 4 casos de conversão passando](docs/test/screenshots/TransactionOutputTestResult.png)
+
+![TransactionControllerDateTest: 3 testes de data passando](docs/test/screenshots/TransactionControllerDateTest.png)
+
+### Limitações conhecidas
+
+- **Testes dependem de um MySQL externo** (herdado do projeto original): o suporte a Docker Compose é `developmentOnly` e não vale para os testes. Por isso é preciso subir o banco e definir as variáveis `SPRING_DATASOURCE_*`, como mostrado acima.
 
 ## Qual melhoria você implementou
 
-> **A fazer (TODO):** descrever a melhoria implementada neste projeto.
+Implementei duas melhorias, um ajuste no controller e testes automatizados. A ideia foi aproveitar a comunicação com a IA que já existia: as novas funcionalidades são casos de uso comuns, expostos em endpoints REST (que testei sem gastar créditos) e registrados como *tools* para a IA usar.
 
-<!--
-Sugestão do que incluir:
-- qual melhoria foi escolhida e por quê;
-- quais arquivos foram criados ou alterados;
-- como testar a melhoria (requisição de exemplo, teste automatizado);
-- prints ou anotações do processo, se houver.
--->
+### 1. Data nas transações e consulta por data
+
+**O que mudou:**
+
+- Toda transação passou a ter uma **data** (`LocalDate`, formato `YYYY-MM-DD`). Se ela não for informada no cadastro, a aplicação usa a **data atual do servidor**.
+- **Novo endpoint** `GET /transactions?date=YYYY-MM-DD` para listar os gastos de um dia. Os outros endpoints passaram a devolver a data também.
+- **Novas tools para a IA:**
+  - `list-transactions-by-date`: consulta por data, para perguntas como "quanto gastei hoje?";
+  - `get-current-date`: informa a data de hoje, já que o modelo não sabe que dia é e precisa disso para entender "hoje" e "ontem";
+  - a `persist-transaction` aceita a data como **opcional**.
+- **Prompt de sistema:** uma instrução nova pede ao modelo que consulte a data atual quando o usuário usar datas relativas.
+
+**Decisões:**
+
+- **Regra da data padrão no domínio** (construtor de `Transaction`), e não no controller. Assim, ela vale para qualquer entrada, seja o REST ou a IA.
+- **Query param (`?date=`) em vez de `/transactions/{date}`.** A rota `/transactions/{category}` já captura qualquer valor depois da barra, então uma data ali seria interpretada como categoria. O `@DateTimeFormat(iso = DATE)` garante o formato `YYYY-MM-DD` independentemente do idioma do servidor, e um formato inválido devolve `400`.
+- **Coluna `transaction_date`**, porque `date` é palavra-chave em SQL. A coluna é criada automaticamente pelo `ddl-auto=update`.
+- **Data omitida pela IA quando o usuário não a menciona.** A descrição do parâmetro instrui o modelo a omitir a data nesse caso, porque modelos tendem a inventar datas. Na omissão, vale a regra do domínio.
+- **`CurrentDateTool` em `infrastructure/ai`**, e não em `application`. Ela não é regra de negócio nem tem endpoint REST; é só um apoio para o modelo.
+
+### 2. Correção dos centavos
+
+**O problema:** o valor é recebido e guardado em centavos (`8000` = R$ 80,00), mas a resposta mostrava `8000.0`. A conversão só acrescentava casas decimais, sem dividir por 100. Isso aparecia na API e também nas respostas das tools, então a IA podia dizer "8000 reais".
+
+**A correção:**
+- A conversão passou a ser feita num único ponto, o `TransactionOutput.from`, com `BigDecimal.valueOf(amount, 2)`. Agora 8000 vira `80.00`.
+- O tipo do valor de saída passou de `double` para `BigDecimal`, que é exato para dinheiro e mantém as duas casas decimais.
+- Entrada e banco continuam em centavos. Não houve migração, e os registros antigos passaram a ser exibidos corretamente.
+
+### 3. Nomes explícitos nos parâmetros do controller
+
+**O problema:** ao rodar os testes pelo VS Code, o `GET /transactions?date=` falhava com `Name for argument of type [java.time.LocalDate] not specified`. Sem um nome explícito na anotação, o Spring descobre o nome do parâmetro (`date`) por uma informação que o compilador só grava com a opção `-parameters`. O Gradle usa essa opção (configurada pelo plugin do Spring Boot), mas o compilador da extensão Java do VS Code não.
+
+**A correção:** declarar os nomes, `@RequestParam("date")` e `@PathVariable("category")`. Assim os endpoints funcionam em qualquer IDE ou compilador. Isso corrigiu também o `GET /transactions/{categoria}` do projeto original, que tinha o mesmo problema ao rodar pelo VS Code.
+
+### 4. Testes automatizados
+
+Criei dois testes, descritos com os prints da execução em [Testes criados](#testes-criados):
+
+- `TransactionOutputTest`: conversão de centavos para reais (teste unitário, 4 casos);
+- `TransactionControllerDateTest`: data informada, data padrão e listagem por data, chamando a API (3 testes de integração).
+
+### Arquivos criados e alterados
+
+| Camada | Arquivo | Mudança |
+|---|---|---|
+| Domínio | `domain/Transaction.java` | campo `date` e regra da data padrão |
+| Domínio | `domain/TransactionRepository.java` | `findAllByDate` |
+| Aplicação | `application/ListTransactionsByDateUseCase.java` (novo) | caso de uso e tool `list-transactions-by-date` |
+| Aplicação | `application/PersistTransactionUseCase.java` | repassa a data |
+| Aplicação | `application/input/PersistTransactionInput.java` | `date` opcional na tool |
+| Aplicação | `application/output/TransactionOutput.java` | `date` e conversão centavos → reais (`BigDecimal`) |
+| Infraestrutura | `infrastructure/ai/CurrentDateTool.java` (novo) | tool `get-current-date` |
+| Infraestrutura | `infrastructure/http/TransactionController.java` | endpoint `?date=`, registro das tools novas e nomes explícitos em `@RequestParam`/`@PathVariable` |
+| Infraestrutura | `infrastructure/http/request/TransactionRequest.java` | `date` na requisição |
+| Infraestrutura | `infrastructure/http/response/TransactionResponse.java` | `date` e `amount` em `BigDecimal` |
+| Infraestrutura | `infrastructure/persistence/entity/TransactionEntity.java` | coluna `transaction_date` |
+| Infraestrutura | `infrastructure/persistence/repository/*` | consulta `findAllByDate` |
+| Recursos | `prompts/system-message.st` | instrução sobre datas relativas |
+| Testes | `src/test/.../application/output/TransactionOutputTest.java` (novo) | conversão centavos → reais |
+| Testes | `src/test/.../infrastructure/http/TransactionControllerDateTest.java` (novo) | data informada, data padrão e listagem por data |
+| Documentação | `docs/test/screenshots/` (novo) | prints da execução dos testes |
+
+Os testes manuais estão em [Testando as novas funcionalidades](#testando-as-novas-funcionalidades), e os automatizados, em [Testes criados](#testes-criados).
 
 ## O que você aprendeu
 
-> **A fazer (TODO):** descrever o que foi aprendido durante o desafio.
+- **Tool calling na prática:** o modelo decide sozinho qual método chamar, e as descrições de `@Tool` e `@ToolParam` funcionam como instruções para ele. Um parâmetro opcional com a orientação "omita se o usuário não mencionar" evita que a IA invente dados.
+- **O modelo não sabe a data de hoje:** para entender "hoje" ou "ontem", foi preciso dar essa informação a ele por meio de uma tool.
+- **Camadas bem separadas facilitam evoluir:** o mesmo caso de uso atende o REST e a IA. Por isso consegui desenvolver e testar tudo pelos endpoints, sem gastar créditos. Para a IA usar as funcionalidades novas, basta registrá-las como tools no `ChatClient`.
+- **Dinheiro não combina com `double`:** guardar em centavos (`long`) e converter com `BigDecimal` na saída evita erros de arredondamento.
+- **Rotas no Spring MVC:** `/{category}` e `/{date}` no mesmo nível conflitam, e o *query param* resolve. O `@DateTimeFormat` garante o formato da data.
+- **Ambiente e ferramentas:**
+  - ajustar a versão do Java pelo *toolchain* do Gradle;
+  - entender por que um caminho com acento quebrava os testes no Windows;
+  - descobrir que o erro "não pode encontrar o arquivo" do Docker queria dizer que o Docker Desktop estava parado;
+  - manter a chave da API fora do Git com `.env` e `.env.example`.
+- **Testes com `@SpringBootTest`:** eles sobem a aplicação inteira, banco incluído, e por isso precisam de um MySQL acessível. Testes que chamam APIs pagas precisam de saldo: sem créditos, a OpenAI responde `429 insufficient_quota`.
+- **Testes de API com MockMvc:** `@SpringBootTest` com MockMvc testa o fluxo completo sem abrir uma porta HTTP, e o `@Transactional` no teste desfaz o que foi gravado. No Spring Boot 4, o `@AutoConfigureMockMvc` mudou de módulo, então montei o MockMvc a partir do contexto.
+- **O mesmo código pode se comportar diferente conforme o compilador:** o endpoint por data funcionava pelo Gradle e falhava pelo VS Code, porque só o Gradle grava os nomes dos parâmetros no `.class` (opção `-parameters`). Declarar `@RequestParam("date")` deixou o código independente disso.
+- **Ler o erro com atenção:** um `400` nos testes parecia ser problema da data, mas era um erro de digitação na categoria (`PHORMA`). O Jackson recusa valores que não existem no enum e a API responde `400` antes de chegar ao caso de uso.
 
-<!--
-Sugestão do que incluir:
-- conceitos novos (Spring AI, ChatClient, tool calling, transcrição, geração de voz...);
-- dificuldades encontradas e como foram resolvidas;
-- o que faria diferente ou evoluiria depois.
--->
+**Próximos passos que eu faria:**
+- validações antes de salvar (valor maior que zero, descrição obrigatória);
+- consulta por período (de/até);
 
 ## Referências
 
